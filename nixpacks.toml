@@ -1,0 +1,10 @@
+[phases.setup]
+aptPkgs = [
+  "tesseract-ocr",
+  "tesseract-ocr-eng",
+  "tesseract-ocr-rus",
+  "tesseract-ocr-uzb"
+]
+
+[start]
+cmd = "python bot.py"
