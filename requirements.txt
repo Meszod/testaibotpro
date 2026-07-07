@@ -1,8 +1,8 @@
-aiogram==3.13.1
+aiogram==3.4.1
 aiosqlite==0.20.0
-pdfplumber==0.11.4
-pytesseract==0.3.13
-httpx==0.27.2
-python-docx==1.1.2
-Pillow==10.4.0
-openpyxl==3.1.5
+pdfplumber==0.11.0
+pytesseract==0.3.10
+httpx==0.27.0
+python-docx==1.1.0
+Pillow==10.3.0
+openpyxl==3.1.2
