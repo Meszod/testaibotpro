@@ -217,6 +217,48 @@ async def save_result(test_id, user_id, score, total):
         """, (test_id, user_id, score, total))
         await db.commit()
 
+async def get_user_result(test_id, user_id):
+    """Foydalanuvchi shu testni avval yechganmi — birinchi (hisobga olingan) natijasini qaytaradi."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            "SELECT score,total,done_at FROM results WHERE test_id=? AND user_id=? ORDER BY id ASC LIMIT 1",
+            (test_id, user_id)
+        ) as cur:
+            return await cur.fetchone()
+
+async def get_leaderboard(limit: int = 10):
+    """Eng yaxshi o'quvchilar reytingi: to'g'ri javoblar soni bo'yicha."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            """SELECT user_id,username,first_name,last_name,correct,total
+               FROM users WHERE total>0
+               ORDER BY correct DESC, total ASC LIMIT ?""",
+            (limit,)
+        ) as cur:
+            return await cur.fetchall()
+
+async def get_all_tests():
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            "SELECT test_id,title,data_json,created_at FROM tests ORDER BY created_at DESC"
+        ) as cur:
+            return await cur.fetchall()
+
+async def delete_test(test_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM tests WHERE test_id=?", (test_id,))
+        await db.execute("DELETE FROM results WHERE test_id=?", (test_id,))
+        await db.commit()
+
+async def get_test_result_stats(test_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            """SELECT COUNT(*), AVG(score*1.0/total), MAX(score*1.0/total)
+               FROM results WHERE test_id=? AND total>0""",
+            (test_id,)
+        ) as cur:
+            return await cur.fetchone()
+
 # ═══════════════════════════════════════════════════════════════
 # 🔗  REFERAL TIZIMI
 # ═══════════════════════════════════════════════════════════════
@@ -456,6 +498,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="✍️ Matn kiritish", callback_data="mode_text")
     b.button(text="🤖 AI bilan test yaratish", callback_data="mode_ai")
     b.button(text="📊 Mening statistikam", callback_data="my_stats")
+    b.button(text="🏆 Reyting", callback_data="leaderboard")
     b.button(text=" Taklif qilish", callback_data="my_referral")
     b.button(text="👨💼 Admin panel", callback_data="admin_panel")
     b.adjust(2)
@@ -465,6 +508,7 @@ def user_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📝 Testni boshlash", callback_data="start_user_test")
     b.button(text="📊 Mening statistikam", callback_data="my_stats")
+    b.button(text="🏆 Reyting", callback_data="leaderboard")
     b.button(text="👥 Taklif qilish", callback_data="my_referral")
     b.adjust(2)
     return b.as_markup()
@@ -511,24 +555,55 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="📊 Statistika (Excel)", callback_data="admin_excel")
     b.button(text=" Statistika (Text)", callback_data="admin_txt")
     b.button(text="👥 Foydalanuvchilar soni", callback_data="admin_count")
+    b.button(text="🏆 Reyting", callback_data="leaderboard")
+    b.button(text="📋 Testlar ro'yxati", callback_data="admin_tests")
+    b.button(text="🔍 Foydalanuvchi qidirish", callback_data="admin_search_user")
     b.button(text="📢 Hammaga xabar", callback_data="admin_broadcast")
     b.button(text="🏠 Asosiy menyu", callback_data="home")
     b.adjust(2)
+    return b.as_markup()
+
+def already_done_kb(test_id: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🔁 Tayyorlanish uchun yechish", callback_data=f"practice_{test_id}")
+    b.button(text="🏠 Asosiy menyu", callback_data="home")
+    b.adjust(1)
     return b.as_markup()
 
 # ═══════════════════════════════════════════════════════════════
 # 🎮  QUIZ CORE
 # ═══════════════════════════════════════════════════════════════
 async def start_quiz(chat_id: int, uid: int, tests: list,
-                     title: str = "Test", test_id: str = None):
+                     title: str = "Test", test_id: str = None, practice: bool = False):
     sessions[uid] = {
-        "tests":   tests,
-        "index":   0,
-        "score":   0,
-        "title":   title,
-        "test_id": test_id,
+        "tests":    tests,
+        "index":    0,
+        "score":    0,
+        "title":    title,
+        "test_id":  test_id,
+        "practice": practice,
     }
     await send_question(chat_id, uid)
+
+async def send_already_done_message(target, uid: int, test_id: str, title: str):
+    """Foydalanuvchi bu testni avval yechgan bo'lsa, oldingi natijasini ko'rsatadi
+    va 'tayyorlanish uchun yechish' imkonini beradi (ball hisoblanmaydi)."""
+    result = await get_user_result(test_id, uid)
+    score, total, done_at = result if result else (0, 0, "-")
+    pct = round(score / total * 100) if total else 0
+    text = (
+        f"⚠️ <b>Siz bu testni allaqachon yechgansiz!</b>\n\n"
+        f"📝 <b>{title}</b>\n\n"
+        f"📊 <b>Sizning natijangiz:</b>\n"
+        f"✅ To'g'ri: <b>{score}</b>\n"
+        f"❌ Noto'g'ri: <b>{total - score}</b>\n"
+        f"🎯 Foiz: <b>{pct}%</b>\n"
+        f"🕒 Sana: {done_at}\n\n"
+        f"ℹ️ Har bir test faqat <b>1 marta</b> ball uchun hisoblanadi.\n"
+        f"Agar mashq qilib ko'rmoqchi bo'lsangiz, quyidagi tugmani bosing —\n"
+        f"bu safar javoblaringiz <b>reytingga hisoblanmaydi</b>."
+    )
+    await target.answer(text, reply_markup=already_done_kb(test_id))
 
 async def send_question(chat_id: int, uid: int):
     d     = sessions[uid]
@@ -605,6 +680,10 @@ async def cmd_start(message: Message, state: FSMContext):
                 "Testni boshlashdan oldin ro'yxatdan o'ting.\n\n"
                 " <b>Ismingizni kiriting:</b>"
             )
+        existing = await get_user_result(test_id, uid)
+        if existing:
+            return await send_already_done_message(message, uid, test_id, title)
+
         u = await get_user(uid)
         await message.answer(
             f"🎯 <b>{title}</b>\n"
@@ -688,6 +767,10 @@ async def reg_level(c: CallbackQuery, state: FSMContext):
     if pending:
         title, tests, owner = await get_test(pending)
         if tests:
+            existing = await get_user_result(pending, uid)
+            if existing:
+                await send_already_done_message(c.message, uid, pending, title)
+                return
             await c.message.answer(
                 f" <b>{title}</b> — {len(tests)} ta savol\n\nTest boshlanmoqda..."
             )
@@ -861,12 +944,41 @@ async def cb_play_test(c: CallbackQuery):
     if not tests:
         return await c.message.answer(" Test topilmadi.", reply_markup=home_kb())
 
+    uid = c.from_user.id
+    existing = await get_user_result(test_id, uid)
+    if existing:
+        return await send_already_done_message(c.message, uid, test_id, title)
+
     await c.message.answer(
         f"🎯 <b>{title}</b>\n"
         f"📝 {len(tests)} ta savol\n\n"
         f"Test boshlanmoqda..."
     )
-    await start_quiz(c.message.chat.id, c.from_user.id, tests, title, test_id)
+    await start_quiz(c.message.chat.id, uid, tests, title, test_id)
+
+# ═══════════════════════════════════════════════════════════════
+# 🔁  TAYYORLANISH REJIMI (ball hisoblanmaydi)
+# ═══════════════════════════════════════════════════════════════
+@dp.callback_query(F.data.startswith("practice_"))
+async def cb_practice_test(c: CallbackQuery):
+    try:
+        await c.answer()
+    except:
+        pass
+
+    test_id = c.data.split("practice_")[1]
+    title, tests, owner = await get_test(test_id)
+    if not tests:
+        return await c.message.answer("❌ Test topilmadi.", reply_markup=home_kb())
+
+    await c.message.answer(
+        f"🔁 <b>Tayyorlanish rejimi</b>\n\n"
+        f"🎯 <b>{title}</b>\n"
+        f"📝 {len(tests)} ta savol\n\n"
+        f"⚠️ Diqqat: bu urinishning ballari <b>reytingga hisoblanmaydi</b>, "
+        f"faqat mashq qilish uchun.\n\nTest boshlanmoqda..."
+    )
+    await start_quiz(c.message.chat.id, c.from_user.id, tests, title, test_id, practice=True)
 
 # ═══════════════════════════════════════════════════════════════
 # 🔗  REFERAL TIZIMI
@@ -1272,18 +1384,21 @@ async def handle_answer(c: CallbackQuery):
     if uid not in sessions:
         return await c.message.answer("⚠️ Session topilmadi. /start bosing.")
 
-    d   = sessions[uid]
-    q   = d["tests"][d["index"]]
-    sel = int(c.data.split("_")[1])
+    d       = sessions[uid]
+    q       = d["tests"][d["index"]]
+    sel     = int(c.data.split("_")[1])
+    practice = d.get("practice", False)
 
     if sel == q["correct"]:
         d["score"] += 1
         result_line = "\n\n✅ <b>To'g'ri!</b>"
-        await update_stats(uid, 1)
+        if not practice:
+            await update_stats(uid, 1)
     else:
         ct          = q["options"][q["correct"]]
         result_line = f"\n\n❌ <b>Noto'g'ri!</b>\n💡 To'g'ri: <b>{ct}</b>"
-        await update_stats(uid, 0)
+        if not practice:
+            await update_stats(uid, 0)
 
     try:
         await c.message.edit_text(c.message.text + result_line)
@@ -1307,20 +1422,26 @@ async def handle_answer(c: CallbackQuery):
         test_id = d.get("test_id")
         test_title = d.get("title", "Test")
 
-        if test_id:
+        if test_id and not practice:
             await save_result(test_id, uid, score, total)
 
-        await notify_admins(uid, test_title, score, total)
+        if not practice:
+            await notify_admins(uid, test_title, score, total)
 
         is_admin_user = uid in ADMIN_IDS
         menu_kb = admin_menu_kb() if is_admin_user else user_menu_kb()
+
+        practice_note = (
+            "\n\n⚠️ <i>Bu — tayyorlanish urinishi edi, ball reytingga hisoblanmadi.</i>"
+            if practice else ""
+        )
 
         await c.message.answer(
             f"🏁 <b>{d['title']} — Yakuniy natija</b>\n\n"
             f"✅ To'g'ri: <b>{score}</b>\n"
             f"❌ Noto'g'ri: <b>{total - score}</b>\n"
             f"📊 Natija: <b>{score}/{total}</b> ({pct}%)\n\n"
-            f"{medal}",
+            f"{medal}{practice_note}",
             reply_markup=menu_kb
         )
         del sessions[uid]
